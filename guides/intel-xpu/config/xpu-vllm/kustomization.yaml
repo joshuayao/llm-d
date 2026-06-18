@@ -1,0 +1,143 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+configMapGenerator:
+  - name: xpu-vllm-shared-config
+    literals:
+      - VLLM_MODEL=Qwen/Qwen3-4B
+      - VLLM_TENSOR_PARALLEL_SIZE=2
+      - VLLM_REPLICAS=3
+      - XPU_COUNT=2
+  - name: network-proxy-config
+    literals:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - NO_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - no_proxy=
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+labels:
+  - pairs:
+      llm-d.ai/model: Qwen3-4B
+    includeSelectors: true
+    includeTemplates: true
+    fields:
+      - version: v1
+        kind: ServiceAccount
+        path: metadata/labels
+        create: true
+      - group: apps
+        version: v1
+        kind: Deployment
+        path: metadata/labels
+        create: true
+      - group: apps
+        version: v1
+        kind: Deployment
+        path: spec/selector/matchLabels
+        create: true
+      - group: apps
+        version: v1
+        kind: Deployment
+        path: spec/template/metadata/labels
+        create: true
+      - group: monitoring.coreos.com
+        version: v1
+        kind: PodMonitor
+        path: metadata/labels
+        create: true
+      - group: monitoring.coreos.com
+        version: v1
+        kind: PodMonitor
+        path: spec/selector/matchLabels
+        create: true
+
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: decode
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: decode
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: modelserver
+                env:
+                  - name: VLLM_MODEL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: xpu-vllm-shared-config
+                        key: VLLM_MODEL
+                  - name: VLLM_TENSOR_PARALLEL_SIZE
+                    valueFrom:
+                      configMapKeyRef:
+                        name: xpu-vllm-shared-config
+                        key: VLLM_TENSOR_PARALLEL_SIZE
+                  - name: HTTP_PROXY
+                    valueFrom:
+                      configMapKeyRef:
+                        name: network-proxy-config
+                        key: HTTP_PROXY
+                  - name: HTTPS_PROXY
+                    valueFrom:
+                      configMapKeyRef:
+                        name: network-proxy-config
+                        key: HTTPS_PROXY
+                  - name: NO_PROXY
+                    valueFrom:
+                      configMapKeyRef:
+                        name: network-proxy-config
+                        key: NO_PROXY
+                  - name: http_proxy
+                    valueFrom:
+                      configMapKeyRef:
+                        name: network-proxy-config
+                        key: http_proxy
+                  - name: https_proxy
+                    valueFrom:
+                      configMapKeyRef:
+                        name: network-proxy-config
+                        key: https_proxy
+                  - name: no_proxy
+                    valueFrom:
+                      configMapKeyRef:
+                        name: network-proxy-config
+                        key: no_proxy
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: xpu-vllm-shared-config
+      fieldPath: data.VLLM_REPLICAS
+    targets:
+      - select:
+          group: apps
+          version: v1
+          kind: Deployment
+          name: decode
+        fieldPaths:
+          - spec.replicas
+        options:
+          create: true
+  - source:
+      kind: ConfigMap
+      name: xpu-vllm-shared-config
+      fieldPath: data.XPU_COUNT
+    targets:
+      - select:
+          group: resource.k8s.io
+          version: v1
+          kind: ResourceClaimTemplate
+        fieldPaths:
+          - spec.spec.devices.requests.0.exactly.count

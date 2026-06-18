@@ -1,0 +1,110 @@
+## precise-prefix-cache-routing-and-offloading guide overrides for the router.
+## Layer on top of: recipes/router/base.values.yaml
+##
+## A `vllm launch render` sidecar exposes /v1/completions/render on
+## localhost:8000; the EPP `token-producer` plugin tokenizes prompts via
+## that HTTP endpoint.
+##
+## The precise producer indexes XPU KV-cache events. The CPU producer models
+## vLLM OffloadingConnector's CPU tier because vLLM does not emit CPU block
+## metrics today.
+
+router:
+  tokenizer:
+    enabled: true
+    # Must match guides/intel-xpu/config/xpu-vllm VLLM_MODEL and the
+    # token-producer modelName below.
+    modelName: Qwen/Qwen3-4B
+    env:
+      - name: HF_HOME
+        value: /tmp/hf/hub
+
+  epp:
+    replicas: 2
+    flags:
+      ha-enable-leader-election: false
+    env:
+      - name: HF_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: llm-d-hf-token
+            key: HF_TOKEN
+
+    pluginsConfigFile: "precise-prefix-cache-routing-and-offloading-plugins.yaml"
+    pluginsCustomConfig:
+      precise-prefix-cache-routing-and-offloading-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+          - type: token-producer
+            parameters:
+              modelName: Qwen/Qwen3-4B
+              vllm:
+                url: "http://localhost:8000"
+          - type: endpoint-notification-source
+          - type: precise-prefix-cache-producer
+            name: xpu-prefix-cache-producer
+            parameters:
+              tokenProcessorConfig:
+                blockSize: 64
+              speculativeIndexing: true
+              indexerConfig:
+                kvBlockIndexConfig:
+                  enableMetrics: true
+              kvEventsConfig:
+                topicFilter: "kv@"
+                concurrency: 8
+                discoverPods: true
+                podDiscoveryConfig:
+                  socketPort: 5556
+          - type: approx-prefix-cache-producer
+            name: cpu-prefix-cache-producer
+            parameters:
+              autoTune: false
+              # Conservative default for a 5 GiB offload budget at block-size 64.
+              # Tune this with cpu_bytes_to_use and model dimensions for production.
+              lruCapacityPerServer: 512
+          - type: prefix-cache-scorer
+            name: xpu-prefix-cache-scorer
+            parameters:
+              prefixMatchInfoProducerName: xpu-prefix-cache-producer
+          - type: prefix-cache-scorer
+            name: cpu-prefix-cache-scorer
+            parameters:
+              prefixMatchInfoProducerName: cpu-prefix-cache-producer
+          - type: kv-cache-utilization-scorer
+          - type: queue-scorer
+          - type: no-hit-lru-scorer
+            parameters:
+              prefixMatchInfoProducerName: xpu-prefix-cache-producer
+        dataLayer:
+          sources:
+            - pluginRef: endpoint-notification-source
+              extractors:
+                - pluginRef: xpu-prefix-cache-producer
+        schedulingProfiles:
+          - name: default
+            plugins:
+              - pluginRef: kv-cache-utilization-scorer
+                weight: 2.0
+              - pluginRef: queue-scorer
+                weight: 2.0
+              - pluginRef: xpu-prefix-cache-scorer
+                weight: 2.0
+              - pluginRef: cpu-prefix-cache-scorer
+                weight: 1.0
+              - pluginRef: no-hit-lru-scorer
+                weight: 2.0
+
+  extraServicePorts:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8081
+
+  modelServers:
+    type: vllm
+    targetPorts:
+      - number: 8000
+    matchLabels:
+      llm-d.ai/guide: "precise-prefix-cache-routing-and-offloading"

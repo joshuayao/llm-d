@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decode
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 107
+        supplementalGroups:
+          - 107
+      containers:
+        - name: modelserver
+          command: ["vllm", "serve"]
+          args:
+            - "$(VLLM_MODEL)"
+            - "--dtype=bfloat16"
+            - "--disable-sliding-window"
+            - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
+            - "--block-size=64"
+            - "--tensor-parallel-size=$(VLLM_TENSOR_PARALLEL_SIZE)"
+            - "--kv-events-config"
+            - '{"enable_kv_cache_events":true,"publisher":"zmq","endpoint":"$(KV_EVENTS_ENDPOINT)","topic":"kv@$(POD_IP):$(POD_PORT)@$(VLLM_MODEL)"}'
+            - "--kv-transfer-config"
+            - '{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":5368709120}}'
+            - "--gpu-memory-utilization=0.35"
+            - "--max-num-seqs=128"
+          ports:
+            - containerPort: 5556
+              name: kv-events
+              protocol: TCP
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_PORT
+              value: "8000"
+            - name: KV_EVENTS_ENDPOINT
+              value: "tcp://*:5556"
+            - name: DO_NOT_TRACK
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llm-d-hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              cpu: "16"
+              memory: 40Gi
+            requests:
+              cpu: "8"
+              memory: 20Gi
+            claims:
+              - name: intel-decode-claim
+          volumeMounts:
+            - mountPath: /dev/shm
+              name: shm
+            - mountPath: /.cache
+              name: torch-compile-cache
+            - mountPath: /.triton
+              name: triton-cache
+            - mountPath: /.config
+              name: vllm-config
+          startupProbe:
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+      resourceClaims:
+        - name: intel-decode-claim
+          resourceClaimTemplateName: intel
+      restartPolicy: Always
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 130
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+        - name: torch-compile-cache
+          emptyDir: {}
+        - name: triton-cache
+          emptyDir: {}
+        - name: vllm-config
+          emptyDir: {}

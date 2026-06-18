@@ -1,0 +1,29 @@
+## baseline guide overrides for the llm-d router.
+## Layer on top of: recipes/router/base.values.yaml
+##
+## Random routing baseline: no KV-cache-aware, prefix-cache-aware, or
+## load-aware scoring plugins are configured.
+
+router:
+  extraServicePorts:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8081
+
+  epp:
+    pluginsConfigFile: "baseline-plugins.yaml"
+    pluginsCustomConfig:
+      baseline-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+          - type: weighted-random-picker
+        schedulingProfiles:
+          - name: default
+            plugins:
+              - pluginRef: weighted-random-picker
+
+  modelServers:
+    matchLabels:
+      llm-d.ai/guide: "baseline"
