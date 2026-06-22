@@ -15,8 +15,9 @@ spec:
           args:
             - "$(VLLM_MODEL)"
             - "--port=8000"
-            - "--dtype=float16"
+            - "--dtype=$(VLLM_DTYPE)"
             - "--tensor-parallel-size=$(VLLM_TENSOR_PARALLEL_SIZE)"
+            - "--max-model-len=$(VLLM_MAX_MODEL_LEN)"
             - "--disable-sliding-window"
             - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
           env:

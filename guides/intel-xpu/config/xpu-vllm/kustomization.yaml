@@ -6,8 +6,36 @@ configMapGenerator:
     literals:
       - VLLM_MODEL=Qwen/Qwen3-4B
       - VLLM_TENSOR_PARALLEL_SIZE=2
+      - VLLM_DTYPE=bfloat16
+      - VLLM_MAX_MODEL_LEN=8192
+      - VLLM_GPU_MEMORY_UTILIZATION=0.8
+      - VLLM_IMAGE=ghcr.io/llm-d/llm-d-xpu:v0.7.0
+      - VLLM_IMAGE_PULL_POLICY=IfNotPresent
       - VLLM_REPLICAS=3
-      - XPU_COUNT=2
+      - VLLM_XPU_PER_REPLICA=2
+      - VLLM_MODEL_CACHE_HOST_PATH=/home/josh/.cache
+      - INFERENCE_PERF_SMOKE_LOAD_RATES=1
+      - INFERENCE_PERF_SMOKE_DURATION_SECONDS=15
+      - INFERENCE_PERF_SMOKE_NUM_WORKERS=16
+      - INFERENCE_PERF_SMOKE_WORKER_MAX_CONCURRENCY=16
+      - INFERENCE_PERF_SMOKE_REQUEST_TIMEOUT_SECONDS=300
+      - INFERENCE_PERF_SMOKE_SHARED_PREFIX_NUM_GROUPS=4
+      - INFERENCE_PERF_SMOKE_SHARED_PREFIX_NUM_PROMPTS_PER_GROUP=2
+      - INFERENCE_PERF_SMOKE_SHARED_PREFIX_SYSTEM_PROMPT_LEN=512
+      - INFERENCE_PERF_SMOKE_SHARED_PREFIX_QUESTION_LEN=128
+      - INFERENCE_PERF_SMOKE_SHARED_PREFIX_OUTPUT_LEN=64
+      - INFERENCE_PERF_SMOKE_SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT=false
+      - INFERENCE_PERF_BENCHMARK_LOAD_RATES=1,2
+      - INFERENCE_PERF_BENCHMARK_DURATION_SECONDS=60
+      - INFERENCE_PERF_BENCHMARK_NUM_WORKERS=100
+      - INFERENCE_PERF_BENCHMARK_WORKER_MAX_CONCURRENCY=100
+      - INFERENCE_PERF_BENCHMARK_REQUEST_TIMEOUT_SECONDS=600
+      - INFERENCE_PERF_BENCHMARK_SHARED_PREFIX_NUM_GROUPS=50
+      - INFERENCE_PERF_BENCHMARK_SHARED_PREFIX_NUM_PROMPTS_PER_GROUP=2
+      - INFERENCE_PERF_BENCHMARK_SHARED_PREFIX_SYSTEM_PROMPT_LEN=3000
+      - INFERENCE_PERF_BENCHMARK_SHARED_PREFIX_QUESTION_LEN=600
+      - INFERENCE_PERF_BENCHMARK_SHARED_PREFIX_OUTPUT_LEN=200
+      - INFERENCE_PERF_BENCHMARK_SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT=false
   - name: network-proxy-config
     literals:
       - HTTP_PROXY=
@@ -68,11 +96,13 @@ patches:
       metadata:
         name: decode
       spec:
+        progressDeadlineSeconds: 900
         replicas: 1
         template:
           spec:
             containers:
               - name: modelserver
+                imagePullPolicy: IfNotPresent
                 env:
                   - name: VLLM_MODEL
                     valueFrom:
@@ -84,6 +114,30 @@ patches:
                       configMapKeyRef:
                         name: xpu-vllm-shared-config
                         key: VLLM_TENSOR_PARALLEL_SIZE
+                  - name: VLLM_DTYPE
+                    valueFrom:
+                      configMapKeyRef:
+                        name: xpu-vllm-shared-config
+                        key: VLLM_DTYPE
+                  - name: VLLM_MAX_MODEL_LEN
+                    valueFrom:
+                      configMapKeyRef:
+                        name: xpu-vllm-shared-config
+                        key: VLLM_MAX_MODEL_LEN
+                  - name: HF_HOME
+                    value: /model-cache/huggingface
+                  - name: HF_HUB_CACHE
+                    value: /model-cache/huggingface/hub
+                  - name: TRANSFORMERS_CACHE
+                    value: /model-cache/huggingface/hub
+                  - name: XDG_CACHE_HOME
+                    value: /model-cache/xdg
+                  - name: VLLM_CACHE_ROOT
+                    value: /model-cache/vllm
+                  - name: TORCHINDUCTOR_CACHE_DIR
+                    value: /model-cache/torchinductor
+                  - name: TRITON_CACHE_DIR
+                    value: /model-cache/triton
                   - name: HTTP_PROXY
                     valueFrom:
                       configMapKeyRef:
@@ -114,7 +168,14 @@ patches:
                       configMapKeyRef:
                         name: network-proxy-config
                         key: no_proxy
-
+                volumeMounts:
+                  - name: model-cache
+                    mountPath: /model-cache
+            volumes:
+              - name: model-cache
+                hostPath:
+                  path: /var/lib/llm-d/model-cache
+                  type: DirectoryOrCreate
 replacements:
   - source:
       kind: ConfigMap
@@ -133,7 +194,7 @@ replacements:
   - source:
       kind: ConfigMap
       name: xpu-vllm-shared-config
-      fieldPath: data.XPU_COUNT
+      fieldPath: data.VLLM_XPU_PER_REPLICA
     targets:
       - select:
           group: resource.k8s.io
@@ -141,3 +202,39 @@ replacements:
           kind: ResourceClaimTemplate
         fieldPaths:
           - spec.spec.devices.requests.0.exactly.count
+  - source:
+      kind: ConfigMap
+      name: xpu-vllm-shared-config
+      fieldPath: data.VLLM_MODEL_CACHE_HOST_PATH
+    targets:
+      - select:
+          group: apps
+          version: v1
+          kind: Deployment
+          name: decode
+        fieldPaths:
+          - spec.template.spec.volumes.[name=model-cache].hostPath.path
+  - source:
+      kind: ConfigMap
+      name: xpu-vllm-shared-config
+      fieldPath: data.VLLM_IMAGE_PULL_POLICY
+    targets:
+      - select:
+          group: apps
+          version: v1
+          kind: Deployment
+          name: decode
+        fieldPaths:
+          - spec.template.spec.containers.[name=modelserver].imagePullPolicy
+  - source:
+      kind: ConfigMap
+      name: xpu-vllm-shared-config
+      fieldPath: data.VLLM_IMAGE
+    targets:
+      - select:
+          group: apps
+          version: v1
+          kind: Deployment
+          name: decode
+        fieldPaths:
+          - spec.template.spec.containers.[name=modelserver].image

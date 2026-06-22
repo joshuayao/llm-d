@@ -14,17 +14,16 @@ spec:
           command: ["vllm", "serve"]
           args:
             - "$(VLLM_MODEL)"
-            - "--dtype=bfloat16"
+            - "--dtype=$(VLLM_DTYPE)"
             - "--disable-sliding-window"
             - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
             - "--block-size=64"
             - "--tensor-parallel-size=$(VLLM_TENSOR_PARALLEL_SIZE)"
+            - "--max-model-len=$(VLLM_MAX_MODEL_LEN)"
             - "--kv-events-config"
             - '{"enable_kv_cache_events":true,"publisher":"zmq","endpoint":"$(KV_EVENTS_ENDPOINT)","topic":"kv@$(POD_IP):$(POD_PORT)@$(VLLM_MODEL)"}'
             - "--kv-transfer-config"
             - '{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":5368709120}}'
-            - "--gpu-memory-utilization=0.35"
-            - "--max-num-seqs=128"
           ports:
             - containerPort: 5556
               name: kv-events

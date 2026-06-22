@@ -28,12 +28,13 @@ All scenarios share modelserver topology through [`config/xpu-vllm/kustomization
 - If your environment needs an outbound proxy, either:
   - export `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` in your shell or `~/.bashrc`, or
   - set explicit proxy values in [`config/xpu-vllm/kustomization.yaml`](config/xpu-vllm/kustomization.yaml).
+- The shared kustomization mounts a node-local model cache from `/var/lib/llm-d/model-cache` by default. Change `VLLM_MODEL_CACHE_HOST_PATH` in [`config/xpu-vllm/kustomization.yaml`](config/xpu-vllm/kustomization.yaml) if the node should use a different local directory.
 
 The benchmark script automatically appends Kubernetes internal addresses such as `.svc`, `.svc.cluster.local`, `kubernetes.default.svc`, and private CIDRs to `NO_PROXY`/`no_proxy` before injecting proxy settings into router and modelserver pods. This prevents in-cluster Kubernetes API calls from going through the outbound proxy. Proxy values are written into the rendered manifests before modelserver pods are created, so the script does not need a modelserver rollout restart.
 
 ## Run smoke tests
 
-Smoke mode is the default. It uses a small fixed `shared_prefix` workload and ignores workload-size overrides.
+Smoke mode is the default. It uses the small `shared_prefix` workload configured in `guides/intel-xpu/config/xpu-vllm/kustomization.yaml`.
 
 ```bash
 guides/intel-xpu/benchmarks/run-inference-perf.sh
@@ -57,21 +58,19 @@ then collects logs/data and deletes the scenario namespace before moving to the 
 
 ## Run benchmark tests
 
-Benchmark mode uses a larger `shared_prefix` workload and allows traffic/data-size overrides.
+Benchmark mode uses the larger `shared_prefix` workload configured in `guides/intel-xpu/config/xpu-vllm/kustomization.yaml`.
 
 ```bash
-TEST_MODE=benchmark \
-LOAD_RATES=3,10,20,30 \
-DURATION_SECONDS=180 \
-SHARED_PREFIX_NUM_GROUPS=64 \
-SHARED_PREFIX_NUM_PROMPTS_PER_GROUP=4 \
-SHARED_PREFIX_SYSTEM_PROMPT_LEN=4096 \
-SHARED_PREFIX_QUESTION_LEN=512 \
-SHARED_PREFIX_OUTPUT_LEN=256 \
-guides/intel-xpu/benchmarks/run-inference-perf.sh
+guides/intel-xpu/benchmarks/run-inference-perf.sh --mode benchmark
 ```
 
 The workload type is always `shared_prefix`.
+
+Configure workload and vLLM deployment knobs in `guides/intel-xpu/config/xpu-vllm/kustomization.yaml`, not in the benchmark script. The shared kustomization is the single source of truth for model, replicas, XPU per replica, tensor parallelism, dtype, max model length, vLLM image pull policy, node-local cache path, network proxy defaults, smoke/benchmark inference-perf settings, and optional vLLM flags such as:
+
+`--max-model-len`, `--gpu-memory-utilization`, `--max-num-seqs`, and `--max-num-batched-tokens`. Smoke mode only changes the inference-perf workload size; it uses the same kustomization-rendered deployment topology and vLLM flags as benchmark mode.
+
+For optional vLLM flags such as `VLLM_GPU_MEMORY_UTILIZATION`, leave the value after `=` empty in `config/xpu-vllm/kustomization.yaml` to use the vLLM image default.
 
 ## Output and comparison
 

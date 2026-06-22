@@ -12,20 +12,20 @@ if [[ -f "${HOME}/.bashrc" ]]; then
   set -u
 fi
 
-MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-4B}"
+MODEL_NAME=""
 WORKLOAD="shared_prefix"
 TEST_MODE="${TEST_MODE:-smoke}"
-LOAD_RATES="${LOAD_RATES:-}"
-DURATION_SECONDS="${DURATION_SECONDS:-}"
-NUM_WORKERS="${NUM_WORKERS:-}"
-WORKER_MAX_CONCURRENCY="${WORKER_MAX_CONCURRENCY:-}"
-REQUEST_TIMEOUT_SECONDS="${REQUEST_TIMEOUT_SECONDS:-}"
-SHARED_PREFIX_NUM_GROUPS="${SHARED_PREFIX_NUM_GROUPS:-}"
-SHARED_PREFIX_NUM_PROMPTS_PER_GROUP="${SHARED_PREFIX_NUM_PROMPTS_PER_GROUP:-}"
-SHARED_PREFIX_SYSTEM_PROMPT_LEN="${SHARED_PREFIX_SYSTEM_PROMPT_LEN:-}"
-SHARED_PREFIX_QUESTION_LEN="${SHARED_PREFIX_QUESTION_LEN:-}"
-SHARED_PREFIX_OUTPUT_LEN="${SHARED_PREFIX_OUTPUT_LEN:-}"
-SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT="${SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT:-}"
+LOAD_RATES=""
+DURATION_SECONDS=""
+NUM_WORKERS=""
+WORKER_MAX_CONCURRENCY=""
+REQUEST_TIMEOUT_SECONDS=""
+SHARED_PREFIX_NUM_GROUPS=""
+SHARED_PREFIX_NUM_PROMPTS_PER_GROUP=""
+SHARED_PREFIX_SYSTEM_PROMPT_LEN=""
+SHARED_PREFIX_QUESTION_LEN=""
+SHARED_PREFIX_OUTPUT_LEN=""
+SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT=""
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PWD}/intel-xpu-inference-perf-runs}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 ENDPOINT_MODE="${ENDPOINT_MODE:-cluster-ip}"
@@ -66,33 +66,9 @@ Options:
   -h, --help            Show this help.
 
 Environment overrides:
-  MODEL_NAME                         Default: Qwen/Qwen3-4B
   TEST_MODE                          smoke | benchmark. Default: smoke
-                                     smoke uses fixed small settings and ignores
-                                     workload/traffic override variables below.
-                                     benchmark supports those overrides.
-  LOAD_RATES                         Comma-separated constant rates.
-                                     benchmark default: 3,10,20,30
-  DURATION_SECONDS                   Duration for each rate stage.
-                                     benchmark default: 180
-  NUM_WORKERS                        inference-perf workers.
-                                     benchmark default: 100
-  WORKER_MAX_CONCURRENCY             Max concurrency per worker.
-                                     benchmark default: 100
-  REQUEST_TIMEOUT_SECONDS            Request timeout.
-                                     benchmark default: 600
-  SHARED_PREFIX_NUM_GROUPS           shared_prefix num_groups. benchmark default: 64
-  SHARED_PREFIX_NUM_PROMPTS_PER_GROUP
-                                     shared_prefix num_prompts_per_group.
-                                     benchmark default: 4
-  SHARED_PREFIX_SYSTEM_PROMPT_LEN    shared_prefix system_prompt_len.
-                                     benchmark default: 4096
-  SHARED_PREFIX_QUESTION_LEN         shared_prefix question_len.
-                                     benchmark default: 512
-  SHARED_PREFIX_OUTPUT_LEN           shared_prefix output_len.
-                                     benchmark default: 256
-  SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT
-                                     shared_prefix enable_multi_turn_chat. Default: false
+                                     Workload settings are read from
+                                     guides/intel-xpu/config/xpu-vllm/kustomization.yaml.
   ENDPOINT_MODE                      cluster-ip | service-dns. Default: cluster-ip
   ROUTER_CHART_VERSION               llm-d router chart version. Default: v0
   APPLY_GAIE_CRDS                    Apply GAIE CRDs before running. Default: false
@@ -182,34 +158,9 @@ fi
 
 TOOLS_DIR="${TOOLS_DIR:-${OUTPUT_ROOT}/.tools}"
 
-apply_test_mode_defaults() {
+validate_test_mode() {
   case "$TEST_MODE" in
-    smoke)
-      LOAD_RATES="1"
-      DURATION_SECONDS="60"
-      NUM_WORKERS="16"
-      WORKER_MAX_CONCURRENCY="16"
-      REQUEST_TIMEOUT_SECONDS="300"
-      SHARED_PREFIX_NUM_GROUPS="4"
-      SHARED_PREFIX_NUM_PROMPTS_PER_GROUP="2"
-      SHARED_PREFIX_SYSTEM_PROMPT_LEN="512"
-      SHARED_PREFIX_QUESTION_LEN="128"
-      SHARED_PREFIX_OUTPUT_LEN="64"
-      SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT="false"
-      ;;
-    benchmark)
-      LOAD_RATES="${LOAD_RATES:-3,10,20,30}"
-      DURATION_SECONDS="${DURATION_SECONDS:-180}"
-      NUM_WORKERS="${NUM_WORKERS:-100}"
-      WORKER_MAX_CONCURRENCY="${WORKER_MAX_CONCURRENCY:-100}"
-      REQUEST_TIMEOUT_SECONDS="${REQUEST_TIMEOUT_SECONDS:-600}"
-      SHARED_PREFIX_NUM_GROUPS="${SHARED_PREFIX_NUM_GROUPS:-64}"
-      SHARED_PREFIX_NUM_PROMPTS_PER_GROUP="${SHARED_PREFIX_NUM_PROMPTS_PER_GROUP:-4}"
-      SHARED_PREFIX_SYSTEM_PROMPT_LEN="${SHARED_PREFIX_SYSTEM_PROMPT_LEN:-4096}"
-      SHARED_PREFIX_QUESTION_LEN="${SHARED_PREFIX_QUESTION_LEN:-512}"
-      SHARED_PREFIX_OUTPUT_LEN="${SHARED_PREFIX_OUTPUT_LEN:-256}"
-      SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT="${SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT:-false}"
-      ;;
+    smoke|benchmark) ;;
     *)
       echo "unsupported TEST_MODE=${TEST_MODE}; use smoke or benchmark" >&2
       exit 2
@@ -217,7 +168,7 @@ apply_test_mode_defaults() {
   esac
 }
 
-apply_test_mode_defaults
+validate_test_mode
 
 scenario_key() {
   local scenario="$1"
@@ -334,6 +285,7 @@ write_config() {
   local scenario="$1"
   local base_url="$2"
   local config_path="$3"
+  local report_dir="$4"
 
   {
     cat <<EOF
@@ -364,8 +316,63 @@ report:
     summary: true
     per_stage: true
     per_request: true
+storage:
+  local_storage:
+    path: ${report_dir}
 EOF
   } > "$config_path"
+}
+
+load_inference_perf_settings() {
+  local rendered_manifest="$1"
+
+  eval "$(
+    python3 - "$rendered_manifest" "$TEST_MODE" <<'PY'
+import shlex
+import sys
+import yaml
+
+manifest, mode = sys.argv[1:]
+prefix = f"INFERENCE_PERF_{mode.upper()}_"
+mapping = {
+    "LOAD_RATES": "LOAD_RATES",
+    "DURATION_SECONDS": "DURATION_SECONDS",
+    "NUM_WORKERS": "NUM_WORKERS",
+    "WORKER_MAX_CONCURRENCY": "WORKER_MAX_CONCURRENCY",
+    "REQUEST_TIMEOUT_SECONDS": "REQUEST_TIMEOUT_SECONDS",
+    "SHARED_PREFIX_NUM_GROUPS": "SHARED_PREFIX_NUM_GROUPS",
+    "SHARED_PREFIX_NUM_PROMPTS_PER_GROUP": "SHARED_PREFIX_NUM_PROMPTS_PER_GROUP",
+    "SHARED_PREFIX_SYSTEM_PROMPT_LEN": "SHARED_PREFIX_SYSTEM_PROMPT_LEN",
+    "SHARED_PREFIX_QUESTION_LEN": "SHARED_PREFIX_QUESTION_LEN",
+    "SHARED_PREFIX_OUTPUT_LEN": "SHARED_PREFIX_OUTPUT_LEN",
+    "SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT": "SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT",
+}
+
+with open(manifest) as f:
+    docs = list(yaml.safe_load_all(f))
+
+shared = None
+for doc in docs:
+    if not isinstance(doc, dict) or doc.get("kind") != "ConfigMap":
+        continue
+    name = doc.get("metadata", {}).get("name", "")
+    if name.endswith("xpu-vllm-shared-config"):
+        shared = doc.get("data", {})
+        break
+
+if shared is None:
+    raise SystemExit("missing xpu-vllm-shared-config in rendered manifest")
+
+required = ["VLLM_MODEL", *(prefix + key for key in mapping)]
+missing = [key for key in required if key not in shared or str(shared[key]) == ""]
+if missing:
+    raise SystemExit("missing required inference-perf settings: " + ", ".join(missing))
+
+print(f"MODEL_NAME={shlex.quote(str(shared['VLLM_MODEL']))}")
+for key, variable in mapping.items():
+    print(f"{variable}={shlex.quote(str(shared[prefix + key]))}")
+PY
+  )"
 }
 
 apply_hf_secret() {
@@ -405,7 +412,8 @@ deploy_scenario() {
       -f "${REPO_ROOT}/guides/${guide_dir}/router/${scenario}.values.yaml" \
       -n "$namespace" --version "$ROUTER_CHART_VERSION"
 
-    apply_modelserver_overlay "$scenario" "$namespace" "$dir" "${REPO_ROOT}/guides/${guide_dir}/modelserver/xpu/vllm/"
+    render_modelserver_overlay "$dir" "${REPO_ROOT}/guides/${guide_dir}/modelserver/xpu/vllm/"
+    "$KUBECTL" apply -n "$namespace" -f "${dir}/modelserver.rendered.with-proxy.yaml"
     apply_router_network_proxy "$scenario" "$namespace"
 
     wait_for_scenario "$scenario" "$namespace"
@@ -434,11 +442,9 @@ merge_no_proxy() {
   fi
 }
 
-apply_modelserver_overlay() {
-  local scenario="$1"
-  local namespace="$2"
-  local dir="$3"
-  local overlay="$4"
+render_modelserver_overlay() {
+  local dir="$1"
+  local overlay="$2"
   local rendered="${dir}/modelserver.rendered.yaml"
   local rendered_with_proxy="${dir}/modelserver.rendered.with-proxy.yaml"
 
@@ -447,7 +453,6 @@ apply_modelserver_overlay() {
   HTTP_PROXY_VALUE="$(proxy_env_value HTTP_PROXY http_proxy)" \
   HTTPS_PROXY_VALUE="$(proxy_env_value HTTPS_PROXY https_proxy)" \
   NO_PROXY_VALUE="$(merge_no_proxy "$(proxy_env_value NO_PROXY no_proxy)")" \
-  TEST_MODE_VALUE="$TEST_MODE" \
   python3 - "$rendered" "$rendered_with_proxy" <<'PY'
 import os
 import sys
@@ -460,23 +465,39 @@ with open(src) as f:
 http_proxy = os.environ["HTTP_PROXY_VALUE"]
 https_proxy = os.environ["HTTPS_PROXY_VALUE"]
 no_proxy = os.environ["NO_PROXY_VALUE"]
-test_mode = os.environ["TEST_MODE_VALUE"]
 defaults = no_proxy.split(",")
+
+shared_config = {}
+for doc in docs:
+    if not isinstance(doc, dict) or doc.get("kind") != "ConfigMap":
+        continue
+    name = doc.get("metadata", {}).get("name", "")
+    if name.endswith("xpu-vllm-shared-config"):
+        shared_config = doc.get("data", {})
+        break
+
+optional_vllm_args = {
+    "VLLM_GPU_MEMORY_UTILIZATION": "--gpu-memory-utilization",
+}
+
+def set_cli_arg(args, name, value):
+    args[:] = [arg for arg in args if arg.split("=", 1)[0] != name]
+    if value:
+        args.append(f"{name}={value}")
 
 for doc in docs:
     if not isinstance(doc, dict):
         continue
 
-    if test_mode == "smoke" and doc.get("kind") == "ConfigMap":
-        name = doc.get("metadata", {}).get("name", "")
-        if name.endswith("xpu-vllm-shared-config"):
-            data = doc.setdefault("data", {})
-            data["VLLM_REPLICAS"] = "1"
-
-    if test_mode == "smoke" and doc.get("kind") == "Deployment":
+    if doc.get("kind") == "Deployment":
         labels = doc.get("metadata", {}).get("labels", {})
         if labels.get("llm-d.ai/role") == "decode":
-            doc.setdefault("spec", {})["replicas"] = 1
+            containers = doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+            for container in containers:
+                if container.get("name") == "modelserver":
+                    args = container.setdefault("args", [])
+                    for key, arg_name in optional_vllm_args.items():
+                        set_cli_arg(args, arg_name, shared_config.get(key, ""))
 
     if doc.get("kind") != "ConfigMap":
         continue
@@ -511,7 +532,6 @@ with open(dst, "w") as f:
     yaml.safe_dump_all(docs, f, sort_keys=False)
 PY
 
-  "$KUBECTL" apply -n "$namespace" -f "$rendered_with_proxy"
 }
 
 apply_router_network_proxy() {
@@ -533,11 +553,58 @@ wait_for_scenario() {
   "$KUBECTL" rollout status "deployment/${scenario}-xpu-vllm-decode" -n "$namespace" --timeout="$WAIT_TIMEOUT"
 }
 
+inference_perf_supports_run_command() {
+  "$INFERENCE_PERF" run --help 2>&1 | head -n 1 | grep -Eq 'usage: .* run( |$)'
+}
+
 run_benchmark() {
   local config_path="$1"
   local log_path="$2"
+  local rc=0
 
-  "$INFERENCE_PERF" run --config "$config_path" 2>&1 | tee "$log_path"
+  if inference_perf_supports_run_command; then
+    "$INFERENCE_PERF" run --config "$config_path" 2>&1 | filter_inference_perf_output "$log_path"
+    rc=${PIPESTATUS[0]}
+  else
+    "$INFERENCE_PERF" -c "$config_path" 2>&1 | filter_inference_perf_output "$log_path"
+    rc=${PIPESTATUS[0]}
+  fi
+  return "$rc"
+}
+
+inference_perf_command_text() {
+  local config_path="$1"
+
+  if [[ -n "${INFERENCE_PERF:-}" ]] && inference_perf_supports_run_command; then
+    echo "${INFERENCE_PERF} run --config ${config_path}"
+  else
+    echo "${INFERENCE_PERF:-inference-perf} -c ${config_path}"
+  fi
+}
+
+filter_inference_perf_output() {
+  local log_path="$1"
+
+  python3 - "$log_path" <<'PY'
+import sys
+
+log_path = sys.argv[1]
+skip_resource_tracker_traceback = False
+
+with open(log_path, "w") as log:
+    for line in sys.stdin:
+        if line.startswith("Exception ignored in: <function ResourceTracker.__del__"):
+            skip_resource_tracker_traceback = True
+            continue
+        if skip_resource_tracker_traceback:
+            if line.startswith("AttributeError: '_thread.RLock' object has no attribute '_recursion_count'"):
+                skip_resource_tracker_traceback = False
+            continue
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        log.write(line)
+        log.flush()
+PY
 }
 
 collect_scenario() {
@@ -753,20 +820,8 @@ SUMMARY_CSV="${RUN_DIR}/summary.csv"
 SUMMARY_MD="${RUN_DIR}/summary.md"
 
 cat > "${RUN_DIR}/run.env" <<EOF
-MODEL_NAME=${MODEL_NAME}
 WORKLOAD=shared_prefix
 TEST_MODE=${TEST_MODE}
-LOAD_RATES=${LOAD_RATES}
-DURATION_SECONDS=${DURATION_SECONDS}
-NUM_WORKERS=${NUM_WORKERS}
-WORKER_MAX_CONCURRENCY=${WORKER_MAX_CONCURRENCY}
-REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS}
-SHARED_PREFIX_NUM_GROUPS=${SHARED_PREFIX_NUM_GROUPS}
-SHARED_PREFIX_NUM_PROMPTS_PER_GROUP=${SHARED_PREFIX_NUM_PROMPTS_PER_GROUP}
-SHARED_PREFIX_SYSTEM_PROMPT_LEN=${SHARED_PREFIX_SYSTEM_PROMPT_LEN}
-SHARED_PREFIX_QUESTION_LEN=${SHARED_PREFIX_QUESTION_LEN}
-SHARED_PREFIX_OUTPUT_LEN=${SHARED_PREFIX_OUTPUT_LEN}
-SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT=${SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT}
 ENDPOINT_MODE=${ENDPOINT_MODE}
 ROUTER_CHART_VERSION=${ROUTER_CHART_VERSION}
 GAIE_VERSION=${GAIE_VERSION}
@@ -780,9 +835,13 @@ EOF
 
 echo "Run directory: ${RUN_DIR}"
 
+overall_rc=0
+
 for scenario in "${SCENARIOS[@]}"; do
   namespace="$(scenario_namespace "$scenario")"
   scenario_dir="${RUN_DIR}/${scenario}"
+  guide_dir="intel-xpu/${scenario}"
+  overlay="${REPO_ROOT}/guides/${guide_dir}/modelserver/xpu/vllm/"
   mkdir -p "$scenario_dir"
   CURRENT_SCENARIO="$scenario"
   CURRENT_NAMESPACE="$namespace"
@@ -794,6 +853,7 @@ for scenario in "${SCENARIOS[@]}"; do
   benchmark_rc=0
   config_path="${scenario_dir}/inference-perf.${WORKLOAD}.yaml"
   benchmark_log="${scenario_dir}/inference-perf.${WORKLOAD}.log"
+  report_dir="${scenario_dir}/reports"
 
   {
     echo "scenario=${scenario}"
@@ -803,11 +863,28 @@ for scenario in "${SCENARIOS[@]}"; do
 
   echo "=== ${scenario} ==="
 
+  render_modelserver_overlay "$scenario_dir" "$overlay"
+  load_inference_perf_settings "${scenario_dir}/modelserver.rendered.with-proxy.yaml"
+  {
+    echo "MODEL_NAME=${MODEL_NAME}"
+    echo "LOAD_RATES=${LOAD_RATES}"
+    echo "DURATION_SECONDS=${DURATION_SECONDS}"
+    echo "NUM_WORKERS=${NUM_WORKERS}"
+    echo "WORKER_MAX_CONCURRENCY=${WORKER_MAX_CONCURRENCY}"
+    echo "REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS}"
+    echo "SHARED_PREFIX_NUM_GROUPS=${SHARED_PREFIX_NUM_GROUPS}"
+    echo "SHARED_PREFIX_NUM_PROMPTS_PER_GROUP=${SHARED_PREFIX_NUM_PROMPTS_PER_GROUP}"
+    echo "SHARED_PREFIX_SYSTEM_PROMPT_LEN=${SHARED_PREFIX_SYSTEM_PROMPT_LEN}"
+    echo "SHARED_PREFIX_QUESTION_LEN=${SHARED_PREFIX_QUESTION_LEN}"
+    echo "SHARED_PREFIX_OUTPUT_LEN=${SHARED_PREFIX_OUTPUT_LEN}"
+    echo "SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT=${SHARED_PREFIX_ENABLE_MULTI_TURN_CHAT}"
+  } >> "${scenario_dir}/scenario.env"
+
   if [[ "$DRY_RUN" -eq 1 ]]; then
     endpoint_url="http://${scenario}-epp.${namespace}.svc.cluster.local"
-    write_config "$scenario" "$endpoint_url" "$config_path"
+    write_config "$scenario" "$endpoint_url" "$config_path" "$report_dir"
     echo "DRY RUN deploy: ${scenario} in ${namespace}" | tee "${scenario_dir}/deploy.log"
-    echo "DRY RUN benchmark: ${INFERENCE_PERF:-inference-perf} run --config ${config_path}" | tee "$benchmark_log"
+    echo "DRY RUN benchmark: $(inference_perf_command_text "$config_path")" | tee "$benchmark_log"
     append_summary_row "$SUMMARY_CSV" "$scenario" "$namespace" "$endpoint_url" "dry-run" "$benchmark_log"
     continue
   fi
@@ -831,12 +908,12 @@ for scenario in "${SCENARIOS[@]}"; do
     if [[ "$endpoint_rc" -ne 0 ]]; then
       status="endpoint_failed"
     else
-      write_config "$scenario" "$endpoint_url" "$config_path"
+      write_config "$scenario" "$endpoint_url" "$config_path" "$report_dir"
       config_rc=$?
       if [[ "$config_rc" -ne 0 ]]; then
         status="config_failed"
       else
-        echo "${INFERENCE_PERF} run --config ${config_path}" | tee "$benchmark_log"
+        inference_perf_command_text "$config_path" | tee "$benchmark_log"
         run_benchmark "$config_path" "$benchmark_log"
         benchmark_rc=$?
       fi
@@ -865,9 +942,14 @@ for scenario in "${SCENARIOS[@]}"; do
   } >> "${scenario_dir}/scenario.env"
 
   append_summary_row "$SUMMARY_CSV" "$scenario" "$namespace" "$endpoint_url" "$status" "$benchmark_log" || true
+  if [[ "$status" != "success" ]]; then
+    overall_rc=1
+  fi
 done
 
 write_markdown_summary "$SUMMARY_CSV" "$SUMMARY_MD"
 
 echo "Summary CSV: ${SUMMARY_CSV}"
 echo "Summary Markdown: ${SUMMARY_MD}"
+
+exit "$overall_rc"
